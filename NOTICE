@@ -1,0 +1,11 @@
+Source and Authorization
+
+This component is derived from wheakerd's GitHub repository:
+https://github.com/wheakerd/mimic
+
+Source revision: 443ad3e4a2c8dd9ce7b6028b0b7aea163be4e47d
+
+wheakerd, the repository owner, has explicitly authorized importing and adapting
+this source into super-kernel/mimic.
+
+wheakerd has designated the MIT License for super-kernel/mimic. See LICENSE.
