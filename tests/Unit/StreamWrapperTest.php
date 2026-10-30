@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace SuperKernel\Mimic\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
-use SuperKernel\Mimic\StreamWrapper;
+use SuperKernel\Mimic\Driver\StreamWrapper;
 
 use function strlen;
 
