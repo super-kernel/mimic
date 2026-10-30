@@ -27,10 +27,10 @@ file path or `mimic://` URI. The default policy tries File first and uses Stream
 when the cache cannot be created, read, written, or atomically replaced, or when
 the source is outside the package manager's class graph.
 
-| Driver | Result | Storage |
-| --- | --- | --- |
-| `FileDriver` | Absolute proxy file path | `<VendorDirInterface>/.cache/mimic/` |
-| `StreamDriver` | `mimic://` URI | Current-process memory |
+| Driver         | Result                   | Storage                              |
+|----------------|--------------------------|--------------------------------------|
+| `FileDriver`   | Absolute proxy file path | `<VendorDirInterface>/.cache/mimic/` |
+| `StreamDriver` | `mimic://` URI           | Current-process memory               |
 
 Proxy filenames use the original fully qualified class name, replace namespace
 separators with dots, and end in the single suffix `.tpl`, for example
@@ -124,13 +124,13 @@ adapting its source into `super-kernel/mimic`. wheakerd has designated the
 [MIT License](LICENSE) for this component. This source and authorization
 declaration is retained in [`NOTICE`](NOTICE), including in distribution archives.
 
-| Identity | Upstream | This component |
-| --- | --- | --- |
-| Composer package | `wheakerd/php-mimic` | `super-kernel/mimic` |
-| Source root | upstream `src/` | `src/` |
-| PHP namespace | `PhpMimic\` | `SuperKernel\Mimic\` |
-| Test namespace | `PhpMimicTest\` | `SuperKernel\Mimic\Tests\` |
-| Test entry | framework command demo | PHPUnit suite |
+| Identity         | Upstream               | This component             |
+|------------------|------------------------|----------------------------|
+| Composer package | `wheakerd/php-mimic`   | `super-kernel/mimic`       |
+| Source root      | upstream `src/`        | `src/`                     |
+| PHP namespace    | `PhpMimic\`            | `SuperKernel\Mimic\`       |
+| Test namespace   | `PhpMimicTest\`        | `SuperKernel\Mimic\Tests\` |
+| Test entry       | framework command demo | PHPUnit suite              |
 
 ## Driver and transformation ownership
 

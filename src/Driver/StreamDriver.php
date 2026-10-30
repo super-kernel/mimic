@@ -8,7 +8,6 @@ use RuntimeException;
 use SuperKernel\Mimic\Contract\MimicDriverInterface;
 use SuperKernel\Mimic\Contract\MutatorInterface;
 use SuperKernel\Mimic\Source\SourceFile;
-use SuperKernel\Mimic\StreamWrapper;
 
 use function hash;
 use function in_array;

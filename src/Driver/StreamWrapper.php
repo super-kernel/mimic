@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace SuperKernel\Mimic;
+namespace SuperKernel\Mimic\Driver;
 
 use function strlen;
 use function substr;
@@ -11,7 +11,11 @@ use const SEEK_CUR;
 use const SEEK_END;
 use const SEEK_SET;
 
-/** Read-only PHP stream callbacks. */
+/**
+ * Read-only PHP stream callbacks.
+ *
+ * @internal
+ */
 final class StreamWrapper
 {
     /** @var array<non-empty-string, string> */
