@@ -1,5 +1,7 @@
 <?php
 
+/** @noinspection PhpComposerExtensionStubsInspection OPcache is optional; publish() checks function_exists() first. */
+
 declare(strict_types=1);
 
 namespace SuperKernel\Mimic\Source;
