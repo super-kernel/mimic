@@ -18,6 +18,10 @@ interface MutatorInterface
     public function getCacheKey(): string;
 
     /**
+     * Proxies are reused wherever the source keeps its package name and package-relative path, so the output may
+     * depend on the source location only through that relative location. Bind absolute paths at runtime instead of
+     * embedding them.
+     *
      * @return string Complete PHP source beginning with the opening PHP tag
      *
      * @throws Throwable When source transformation fails; the original failure propagates unchanged
