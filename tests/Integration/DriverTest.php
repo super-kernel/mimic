@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace SuperKernel\Mimic\Tests\Integration;
 
 use InvalidArgumentException;
+use PharData;
 use PhpParser\Error;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use SuperKernel\Contract\PackageManagerInterface;
+use SuperKernel\Contract\PackageMetadataInterface;
 use SuperKernel\Mimic\Contract\MutatorInterface;
 use SuperKernel\Mimic\Driver\FileDriver;
 use SuperKernel\Mimic\Driver\StreamDriver;
@@ -57,10 +59,13 @@ final class DriverTest extends TestCase
     /** @var array<class-string, non-empty-string> */
     private array $classes = [];
 
+    private ?string $packageDirectory;
+
     /** @throws RuntimeException When the temporary workspace cannot be created */
     protected function setUp(): void
     {
         $this->vendor = new VendorDirectory();
+        $this->packageDirectory = $this->vendor->path;
         $mutator = new RenamingMutator();
         $this->mimic = new MimicFactory($this->fileDriver($mutator), new StreamDriver($mutator));
     }
@@ -303,37 +308,98 @@ final class DriverTest extends TestCase
         ], glob(dirname($path) . '/*'));
     }
 
-    /** @throws Throwable When a source-path-dependent proxy cannot be prepared */
-    public function testRelocatingUnchangedSourceRegeneratesTheSameClassProxy(): void
+    /** @throws Throwable When a location-dependent proxy cannot be prepared */
+    public function testMovingASourceWithinItsPackageRegeneratesTheSameClassProxy(): void
     {
         $first = $this->vendor->path . '/original.php';
         $second = $this->vendor->path . '/relocated.php';
-        file_put_contents($first, '<?php class RelocatedProbe { public const string PATH = __FILE__; }');
+        file_put_contents($first, '<?php class RelocatedProbe { public const string NAME = __FILE__; }');
         $this->classes['RelocatedProbe'] = $first;
         $mutator = new class() implements MutatorInterface {
             public function getCacheKey(): string
             {
-                return 'original-file-constant';
+                return 'source-basename';
             }
 
             public function mutate(string $code, ?string $sourcePath = null): string
             {
-                return str_replace('__FILE__', var_export($sourcePath, true), $code);
+                return str_replace('__FILE__', var_export(basename((string) $sourcePath), true), $code);
             }
         };
         $driver = $this->fileDriver($mutator);
         $source = new SourceFile($first);
         $path = $driver->prepare($source);
         $this->assertNotNull($path);
-        $this->assertStringContainsString(var_export($first, true), (string) file_get_contents($path));
+        $this->assertStringContainsString("'original.php'", (string) file_get_contents($path));
         $this->assertTrue(rename($first, $second));
         $this->classes['RelocatedProbe'] = $second;
         $relocated = new SourceFile($second);
         $this->assertSame($source->hash, $relocated->hash);
 
         $this->assertSame($path, $driver->prepare($relocated));
-        $this->assertStringContainsString(var_export($second, true), (string) file_get_contents($path));
-        $this->assertStringNotContainsString(var_export($first, true), (string) file_get_contents($path));
+        $this->assertStringContainsString("'relocated.php'", (string) file_get_contents($path));
+        $this->assertStringNotContainsString("'original.php'", (string) file_get_contents($path));
+    }
+
+    /** @throws Throwable When a proxy cannot be prepared */
+    public function testAMovedPackageReusesItsProxiesWithoutWriting(): void
+    {
+        $first = $this->vendor->path . '/first';
+        $second = $this->vendor->path . '/second';
+        mkdir($first);
+        $this->packageDirectory = $first;
+        $path = $this->mimic->prepare($this->source(directory: $first));
+        $this->assertTrue(touch($path, 100));
+        $inode = fileinode($path);
+        $code = file_get_contents($path);
+        $this->assertTrue(rename($first, $second));
+        $this->packageDirectory = $second;
+        $this->classes['MimicDriverProbe'] = $second . '/source.php';
+
+        $this->assertSame($path, $this->mimic->prepare($second . '/source.php'));
+        clearstatcache(true, $path);
+        $this->assertSame(100, filemtime($path));
+        $this->assertSame($inode, fileinode($path));
+        $this->assertSame($code, file_get_contents($path));
+    }
+
+    /** @throws Throwable When a proxy cannot be prepared */
+    public function testSourcesOutsideALocatedPackageKeepTheirCanonicalLocation(): void
+    {
+        $first = $this->vendor->path . '/first';
+        $second = $this->vendor->path . '/second';
+        mkdir($first);
+        $this->packageDirectory = null;
+        $path = $this->mimic->prepare($this->source(directory: $first));
+        $code = file_get_contents($path);
+        $this->assertTrue(rename($first, $second));
+        $this->classes['MimicDriverProbe'] = $second . '/source.php';
+
+        $this->assertSame($path, $this->mimic->prepare($second . '/source.php'));
+        $this->assertNotSame($code, file_get_contents($path));
+        $this->assertStringContainsString('class PreparedDriverProbe', (string) file_get_contents($path));
+    }
+
+    /** @throws Throwable When an archived source cannot be prepared */
+    public function testArchivedPackagesReuseProxiesPreparedFromTheirUnpackedSources(): void
+    {
+        $directory = $this->vendor->path . '/package';
+        mkdir($directory);
+        $this->packageDirectory = $directory;
+        $path = $this->mimic->prepare($this->source(directory: $directory));
+        $this->assertTrue(touch($path, 100));
+        $code = file_get_contents($path);
+        $archive = 'phar://' . $this->vendor->path . '/package.tar';
+        new PharData($this->vendor->path . '/package.tar')->buildFromDirectory($directory);
+        $this->packageDirectory = $archive;
+        $this->classes['MimicDriverProbe'] = $archive . '/source.php';
+        $source = new SourceFile($archive . '/source.php');
+        $this->assertSame($archive . '/source.php', $source->path);
+
+        $this->assertSame($path, $this->fileDriver(new RenamingMutator())->prepare($source));
+        clearstatcache(true, $path);
+        $this->assertSame(100, filemtime($path));
+        $this->assertSame($code, file_get_contents($path));
     }
 
     /** @throws Throwable When a stream cannot be prepared */
@@ -463,9 +529,9 @@ final class DriverTest extends TestCase
     }
 
     /** @return non-empty-string */
-    private function source(int $value = 1): string
+    private function source(int $value = 1, ?string $directory = null): string
     {
-        $path = $this->vendor->path . '/source.php';
+        $path = ($directory ?? $this->vendor->path) . '/source.php';
         file_put_contents($path, "<?php class MimicDriverProbe { public function value(): int { return $value; } }");
         $this->classes['MimicDriverProbe'] = $path;
 
@@ -476,8 +542,20 @@ final class DriverTest extends TestCase
     {
         $packages = $this->createStub(PackageManagerInterface::class);
         $packages->method('allClasses')->willReturnCallback(fn(): array => $this->classes);
+        $packages->method('packageForClass')->willReturnCallback(
+            fn(string $class): ?PackageMetadataInterface => isset($this->classes[$class]) ? $this->package() : null,
+        );
 
         return new FileDriver($this->vendor, $mutator, $packages);
+    }
+
+    private function package(): PackageMetadataInterface
+    {
+        $package = $this->createStub(PackageMetadataInterface::class);
+        $package->method('name')->willReturn('acme/probe');
+        $package->method('locatedPath')->willReturn($this->packageDirectory);
+
+        return $package;
     }
 
     private function makeReadOnly(string $directory): void

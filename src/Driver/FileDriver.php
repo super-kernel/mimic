@@ -12,8 +12,16 @@ use SuperKernel\Mimic\Source\ProxyFile;
 use SuperKernel\Mimic\Source\SourceFile;
 
 use function array_search;
+use function str_starts_with;
+use function strlen;
+use function substr;
 
-/** Publishes complete proxies atomically and reuses them while the cache fingerprint matches. */
+/**
+ * Publishes complete proxies atomically and reuses them while the cache fingerprint matches.
+ *
+ * The fingerprint identifies a source by its package name and package-relative path, so a proxy stays valid when the
+ * project moves or is packaged into a Phar.
+ */
 final readonly class FileDriver implements MimicDriverInterface
 {
     public function __construct(
@@ -32,7 +40,15 @@ final readonly class FileDriver implements MimicDriverInterface
             return null;
         }
 
-        $proxy = new ProxyFile((string) $this->vendorDir, $class, $source, $this->mutator->getCacheKey());
+        $package = $this->packages->packageForClass($class);
+        $directory = $package?->locatedPath();
+        $location = $source->path;
+
+        if (null !== $package && null !== $directory && str_starts_with($source->path, $directory . '/')) {
+            $location = $package->name() . "\0" . substr($source->path, strlen($directory) + 1);
+        }
+
+        $proxy = new ProxyFile((string) $this->vendorDir, $class, $source, $this->mutator->getCacheKey(), $location);
         $hash = $proxy->cachedHash();
 
         if (false === $hash) {

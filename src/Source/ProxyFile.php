@@ -42,22 +42,26 @@ final readonly class ProxyFile
     /** @var non-empty-string */
     public string $path;
 
-    /** @var non-empty-string Fingerprint of the source path, content, and transformation */
+    /** @var non-empty-string Fingerprint of the source location, content, and transformation */
     public string $hash;
 
     private string $directory;
 
-    /** @param class-string $class */
+    /**
+     * @param class-string     $class
+     * @param non-empty-string $location The source's package-relative location, or its canonical path outside packages
+     */
     public function __construct(
         string     $vendorDir,
         string     $class,
         SourceFile $source,
         string     $cacheKey,
+        string     $location,
     )
     {
         $this->directory = rtrim($vendorDir, '/\\') . '/.cache/mimic';
         $this->path = $this->directory . '/' . str_replace('\\', '.', $class) . '.tpl';
-        $this->hash = hash('sha256', $source->path . "\0" . $cacheKey . "\0" . $source->hash);
+        $this->hash = hash('sha256', $location . "\0" . $cacheKey . "\0" . $source->hash);
     }
 
     /** @return non-empty-string|false|null The recorded hash, false for an unusable proxy, or null if absent */
