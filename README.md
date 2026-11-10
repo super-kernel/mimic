@@ -4,51 +4,140 @@
 
 # SuperKernel Mimic
 
-`super-kernel/mimic` prepares transformed PHP source as cached proxy files or read-only `mimic://` streams. Both drivers apply an injected `Contract\MutatorInterface`. Mimic owns source snapshots and cache publication; it does not select classes, register autoloaders, or execute the generated code. `super-kernel/aop` builds method weaving and interceptor dispatch on top of it.
+`super-kernel/mimic` prepares a transformed copy of a PHP source file, through a transformation you supply, as a cached proxy file or a read-only `mimic://` stream that your code then loads.
 
-## Requirements
+## Installation
 
-- An injected `SuperKernel\Contract\VendorDirInterface` for the cache location.
-- An injected `SuperKernel\Mimic\Contract\MutatorInterface` in both drivers.
-- An injected `SuperKernel\Contract\PackageManagerInterface` in the file driver for source class names and package locations.
-- Readable, trusted PHP source files, either local or inside a Phar archive.
+```bash
+composer require super-kernel/mimic
+```
 
-Mimic has no runtime dependency on PHP-Parser or Swoole. A supplied transformation may declare its own parser dependency. Stream buffers belong to the current process.
+The package has no requirement beyond PHP and does not depend on PHP-Parser or Swoole. It needs a `SuperKernel\Mimic\Contract\MutatorInterface`: `super-kernel/aop` provides one, otherwise the application declares its own. The vendor directory and the package locations come from the metadata of `skernel build`, so a project needs SKERNEL to build it.
 
-## Drivers and cache lifecycle
+## What it provides
 
-`MimicFactory` receives `Driver\FileDriver` and `Driver\StreamDriver` through its constructor. `prepare($sourcePath)` reads one source snapshot and returns a proxy file path or `mimic://` URI. The default policy tries File first and uses Stream when the cache cannot be created, read, written, or atomically replaced, or when the source is outside the package manager's class graph.
+- `MimicFactory::prepare()`, which returns the address of the transformed source of one file.
+- Proxy files in `vendor/.cache/mimic/`, named after the class and reused while the source and the transformation stay the same.
+- Proxies that stay valid when the project moves or is packaged into a Phar archive.
+- A `mimic://` stream in memory when the cache cannot be used or the file is outside the project's packages.
+- Atomic publication, so concurrent processes never read a partial proxy.
 
-| Driver         | Result                   | Storage                              |
-|----------------|--------------------------|--------------------------------------|
-| `FileDriver`   | Absolute proxy file path | `<VendorDirInterface>/.cache/mimic/` |
-| `StreamDriver` | `mimic://` URI           | Current-process memory               |
+It does not:
 
-Proxies live directly at `<VendorDirInterface>/.cache/mimic/<class-name>.tpl`. The file name is the original fully qualified class name with namespace separators replaced by dots, for example `Src.Service.TestService.tpl`, so `Acme\Service\Test` and `Acme\Service_Test` stay distinct. The package manager supplies the class name without reflecting or loading the source. When one file declares several mapped symbols, the first name in its sorted class map names the proxy. Newly published and cached proxies return the same address.
+- choose which classes to transform, or register an autoloader;
+- execute the source it prepares;
+- replace a class that a process has already loaded;
+- parse PHP itself; the transformation does.
 
-The first line is `<?php // mimic-cache-sha256: <digest>`. The digest is SHA-256 over the source location, the mutator cache key, and the source content hash, separated by null bytes. The location is the owning package's name and the source path relative to that package's directory; a source outside its located package keeps its canonical path. The original path is not written into the proxy. Matching fingerprints reuse readable proxies without writing, creating directories, or requiring the Stream protocol. Changed source content, a source moved within its package, or a changed mutator key replaces the same class-named proxy. Moving the project or a package keeps its proxies valid, so proxies prepared before packaging are reused when the application runs from a Phar archive. Modification time, inode, and size are never used to detect changes. Each class has one file slot in a vendor cache, so concurrent integrations sharing that cache must use the same source location and transformation. Use Stream for independent snapshots of different transformations.
+## Quick start
 
-Complete temporary files are atomically renamed in the cache directory, without lock files. Concurrent publishers may repeat transformation work, but readers never observe a partially written proxy. A prepared file path follows later replacements; use the Stream driver's immutable addresses when retaining different snapshots. Successful replacement invalidates OPcache when available. Failed publication preserves existing proxies and prepares the current snapshot through Stream. Unreadable or unrecognized headers also select Stream without overwriting the unverifiable proxy. Parsing and transformation failures propagate with their original Throwable. Preparation never reads, renames, or deletes other cache files, such as hash subdirectories, `.php` or `.php.tpl` proxies, and `.lock` files.
+In a project without `super-kernel/aop`, declare a class with a placeholder. Save it as `src/Billing/Edition.php`:
 
-The Stream driver registers its protocol lazily and rejects a conflicting owner. Its URI includes the source path, content hash, and mutator cache key, so preparing another source revision or transformation does not alter existing snapshots.
+```php
+<?php
 
-Both drivers implement `Contract\MimicDriverInterface::prepare(SourceFile)`. `Source\SourceFile` captures the canonical local path, or a Phar archive path as given, together with the source bytes and content hash. File returns `null` when its cache is unavailable; Stream returns a URI or throws.
+declare(strict_types=1);
 
-Classes already loaded into a running process cannot be replaced: restart workers to load new generated code. Rebuild annotation caches and restore-only or Phar artifacts when persisted class declarations change.
+namespace Src\Billing;
 
-## Transformation contract
+final class Edition
+{
+    public const string NAME = '%EDITION%';
+}
+```
 
-`Contract\MutatorInterface` defines `mutate($code, $sourcePath)` and `getCacheKey()`. The mutation returns complete PHP source beginning with `<?php`. The key must identify the transformation revision and all configuration affecting its output, remain stable across equivalent instances, and change when generated code must change for identical source. The output may depend on the source location only through its package-relative location: bind absolute paths at runtime instead of embedding them, so proxies stay valid when the project moves or is packaged into a Phar archive. Both drivers must receive the same transformation.
+Declare the transformation. Save it as `src/Mimic/FillEdition.php`:
 
-With `super-kernel/aop` installed, its `SuperKernel\Aop\Mutation\Mutator` is bound to `MutatorInterface`, and AOP's loader prepares and loads the collected Aspect classes through Mimic. See the [AOP README](https://github.com/super-kernel/aop/blob/main/README.md) for supported semantics.
+```php
+<?php
 
-`Diagnostics\ExceptionPatcher` is a generic utility. Its `patch($throwable, $originalFile, $originalLine)` sets an original location on a throwable raised from generated code. Mimic never replaces the global exception handler.
+declare(strict_types=1);
 
-## Upstream
+namespace Src\Mimic;
 
-This component ports [wheakerd/mimic](https://github.com/wheakerd/mimic) at [443ad3e4a2c8dd9ce7b6028b0b7aea163be4e47d](https://github.com/wheakerd/mimic/tree/443ad3e4a2c8dd9ce7b6028b0b7aea163be4e47d). The repository belongs to wheakerd, who has explicitly authorized importing and adapting its source into `super-kernel/mimic`. wheakerd has designated the [MIT License](LICENSE) for this component. This source and authorization declaration is retained in [`NOTICE`](NOTICE), including in distribution archives.
+use SuperKernel\Attribute\Provider;
+use SuperKernel\Mimic\Contract\MutatorInterface;
 
-| Identity         | Upstream             | This component       |
-|------------------|----------------------|----------------------|
-| Composer package | `wheakerd/php-mimic` | `super-kernel/mimic` |
-| PHP namespace    | `PhpMimic\`          | `SuperKernel\Mimic\` |
+use function str_replace;
+
+#[Provider(MutatorInterface::class)]
+final readonly class FillEdition implements MutatorInterface
+{
+    public function getCacheKey(): string
+    {
+        return 'fill-edition-1';
+    }
+
+    public function mutate(string $code, ?string $sourcePath = null): string
+    {
+        return str_replace('%EDITION%', 'Community', $code);
+    }
+}
+```
+
+Prepare and load the class. Save the script as `bin/edition.php`:
+
+```php
+<?php
+
+declare(strict_types=1);
+
+use Src\Billing\Edition;
+use SuperKernel\Context\ApplicationContext;
+use SuperKernel\Contract\BasePathInterface;
+use SuperKernel\Mimic\MimicFactory;
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+$container = ApplicationContext::getContainer();
+$source = $container->get(BasePathInterface::class) . '/src/Billing/Edition.php';
+
+$address = $container->get(MimicFactory::class)->prepare($source);
+
+require $address;
+
+echo basename($address), PHP_EOL;
+echo Edition::NAME, PHP_EOL;
+```
+
+Build the project and run the script:
+
+```bash
+skernel build
+php bin/edition.php
+```
+
+It prints:
+
+```text
+Src.Billing.Edition.tpl
+Community
+```
+
+## Public surface
+
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| `SuperKernel\Mimic\Contract\MutatorInterface` | Interface | Implemented by the transformation: `mutate()` returns the new source and `getCacheKey()` identifies the transformation. |
+| `SuperKernel\Mimic\MimicFactory` | Class | Provided by the container; `prepare()` returns a proxy file path or a `mimic://` address. |
+| `SuperKernel\Mimic\Contract\MimicDriverInterface` | Interface | Implemented by the two drivers; `prepare()` takes a source snapshot. |
+| `SuperKernel\Mimic\Driver\FileDriver` | Class | Writes and reuses proxy files in the vendor directory's cache. |
+| `SuperKernel\Mimic\Driver\StreamDriver` | Class | Holds transformed source in memory behind `mimic://` addresses. |
+| `SuperKernel\Mimic\Source\SourceFile` | Class | A snapshot of one source file: its path, content, and content hash. |
+| `SuperKernel\Mimic\Diagnostics\ExceptionPatcher` | Class | `patch()` gives a throwable from generated code its original file and line. |
+
+## Behavior to know
+
+- A proxy is reused while the source content, its package-relative location, and the cache key stay the same; modification times are never used. Change `getCacheKey()` whenever the same source must produce different code.
+- When the cache cannot be created, read, or written, or the source is outside the project's packages, `prepare()` returns a `mimic://` address instead, and an existing proxy is left untouched.
+- A source file that cannot be read raises `InvalidArgumentException` with `The source file is not readable: <path>`; an exception from the transformation propagates unchanged.
+- Another library that owns the `mimic` stream protocol makes the fallback fail with `The mimic stream protocol is already registered by another library.`
+- A class that a process has loaded cannot be replaced: restart long-running workers after a change, and run `skernel build` again after changing classes or packages.
+
+## Documentation
+
+The developer documentation describes the drivers, the cache and its fingerprint, the stream fallback, writing a transformation, and the diagnostics utility, with complete examples: [SuperKernel Mimic](https://github.com/super-kernel/.github/blob/main/docs/components/mimic.md).
+
+## License
+
+Released under the MIT License. See [LICENSE](LICENSE). The upstream source and its authorization are recorded in [NOTICE](NOTICE).

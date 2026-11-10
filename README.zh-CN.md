@@ -4,51 +4,140 @@
 
 # SuperKernel Mimic
 
-`super-kernel/mimic` 把转换后的 PHP 源码准备为缓存的代理文件或只读的 `mimic://` 流。两个驱动都使用注入的 `Contract\MutatorInterface`。Mimic 负责源码快照和缓存发布；它不选择类、不注册自动加载器，也不执行生成的代码。`super-kernel/aop` 在它之上构建方法织入和拦截器调度。
+`super-kernel/mimic` 通过你提供的转换，把 PHP 源文件的一份转换后的副本准备为缓存的代理文件或只读的 `mimic://` 流，然后由你的代码加载它。
 
-## 环境要求
+## 安装
 
-- 注入的 `SuperKernel\Contract\VendorDirInterface`，用于确定缓存位置。
-- 两个驱动都需要注入的 `SuperKernel\Mimic\Contract\MutatorInterface`。
-- 文件驱动需要注入的 `SuperKernel\Contract\PackageManagerInterface`，用于取得源码的类名和所属包的位置。
-- 可读的、可信的 PHP 源文件，位于本地或 Phar 归档内均可。
+```bash
+composer require super-kernel/mimic
+```
 
-Mimic 在运行时不依赖 PHP-Parser 或 Swoole。传入的转换可以声明自己的解析器依赖。流缓冲属于当前进程。
+本包除 PHP 外没有其他要求，也不依赖 PHP-Parser 或 Swoole。它需要一个 `SuperKernel\Mimic\Contract\MutatorInterface`：`super-kernel/aop` 提供了一个，否则由应用声明自己的。依赖目录（vendor 目录）和包的位置来自 `skernel build` 的元数据，因此项目需要用 SKERNEL 构建。
 
-## 驱动与缓存生命周期
+## 提供的能力
 
-`MimicFactory` 通过构造函数接收 `Driver\FileDriver` 和 `Driver\StreamDriver`。`prepare($sourcePath)` 读取一份源码快照，返回代理文件路径或 `mimic://` URI。默认策略先尝试 File；当缓存无法创建、读取、写入或原子替换，或者源码不在包管理器的类图中时，改用 Stream。
+- `MimicFactory::prepare()`，返回某个文件转换后源码的地址。
+- 位于 `vendor/.cache/mimic/` 中、以类命名的代理文件，在源码和转换保持不变时会被重用。
+- 在项目移动或被打包进 Phar 归档之后仍然有效的代理。
+- 当缓存无法使用或文件位于项目的包之外时，内存中的 `mimic://` 流。
+- 原子发布，使并发的进程永远不会读到不完整的代理。
 
-| 驱动           | 结果               | 存储位置                             |
-|----------------|--------------------|--------------------------------------|
-| `FileDriver`   | 代理文件的绝对路径 | `<VendorDirInterface>/.cache/mimic/` |
-| `StreamDriver` | `mimic://` URI     | 当前进程内存                         |
+它不会：
 
-代理文件直接位于 `<VendorDirInterface>/.cache/mimic/<class-name>.tpl`。文件名是原始的完全限定类名，命名空间分隔符替换为点，例如 `Src.Service.TestService.tpl`，因此 `Acme\Service\Test` 和 `Acme\Service_Test` 不会混淆。类名由包管理器提供，无需反射或加载源码。一个文件声明了多个已映射的符号时，用其排序后类图中的第一个名称命名代理。新发布的代理和已缓存的代理返回同一个地址。
+- 选择要转换哪些类，或注册自动加载器；
+- 执行它准备的源码；
+- 替换进程已经加载的类；
+- 自己解析 PHP，这由转换负责。
 
-第一行是 `<?php // mimic-cache-sha256: <digest>`。摘要是对源码位置、mutator 的缓存键和源码内容哈希（以空字节分隔）计算的 SHA-256。源码位置由所属包的名称和源码相对于该包目录的路径组成；不在已定位包目录内的源码沿用其规范路径。原始路径不会写进代理文件。指纹匹配时直接复用可读的代理，不写入、不创建目录，也不需要 Stream 协议。源码内容变化、源码在包内移动或 mutator 键变化，都会替换同一个以类名命名的代理。移动项目或某个包不会使其代理失效，因此打包前准备好的代理在应用从 Phar 归档运行时会被复用。从不使用修改时间、inode 或文件大小来检测变化。每个类在一个 vendor 缓存中只有一个文件位置，因此共享该缓存的并发集成必须使用相同的源码位置和转换。需要为不同转换保留各自独立的快照时，请使用 Stream。
+## 快速开始
 
-完整的临时文件在缓存目录内原子重命名，不使用锁文件。并发的发布者可能重复执行转换，但读取方永远不会看到写了一半的代理。已准备的文件路径会跟随之后的替换；需要保留不同快照时，请使用 Stream 驱动的不可变地址。替换成功后，如果 OPcache 可用，会使其失效。发布失败时保留已有的代理，并通过 Stream 准备当前快照。文件头无法读取或无法识别时，同样改用 Stream，不会覆盖这个无法验证的代理。解析和转换失败会带着原始 Throwable 向外传播。准备过程从不读取、重命名或删除其他缓存文件，例如哈希子目录、`.php` 或 `.php.tpl` 代理以及 `.lock` 文件。
+在没有 `super-kernel/aop` 的项目中，声明一个带有占位符的类。将它保存为 `src/Billing/Edition.php`：
 
-Stream 驱动延迟注册其协议，并拒绝冲突的协议持有者。其 URI 包含源码路径、内容哈希和 mutator 缓存键，因此为另一个源码版本或另一种转换准备快照时，不会改变已有的快照。
+```php
+<?php
 
-两个驱动都实现 `Contract\MimicDriverInterface::prepare(SourceFile)`。`Source\SourceFile` 记录本地文件的规范路径（Phar 归档路径按原样保留），以及源码字节和内容哈希。缓存不可用时 File 返回 `null`；Stream 返回 URI 或抛出异常。
+declare(strict_types=1);
 
-已加载到运行中进程的类无法被替换：要加载新生成的代码，请重启工作进程。持久化的类声明发生变化时，请重新生成注解缓存以及仅恢复或 Phar 的产物。
+namespace Src\Billing;
 
-## 转换契约
+final class Edition
+{
+    public const string NAME = '%EDITION%';
+}
+```
 
-`Contract\MutatorInterface` 定义 `mutate($code, $sourcePath)` 和 `getCacheKey()`。转换结果必须是以 `<?php` 开头的完整 PHP 源码。缓存键必须标识转换的版本以及所有影响其输出的配置，在等价的实例之间保持稳定，并在相同源码需要生成不同代码时发生变化。转换结果只能通过包内相对位置依赖源码位置：绝对路径应在运行时绑定，而不是嵌入输出，这样项目移动或打包进 Phar 归档后代理仍然有效。两个驱动必须接收同一个转换。
+声明转换。将它保存为 `src/Mimic/FillEdition.php`：
 
-安装了 `super-kernel/aop` 时，它的 `SuperKernel\Aop\Mutation\Mutator` 被绑定到 `MutatorInterface`，AOP 的加载器通过 Mimic 准备并加载收集到的 Aspect 类。支持的语义参见 [AOP README](https://github.com/super-kernel/aop/blob/main/README.md)。
+```php
+<?php
 
-`Diagnostics\ExceptionPatcher` 是一个通用工具。它的 `patch($throwable, $originalFile, $originalLine)` 为从生成代码中抛出的异常设置原始位置。Mimic 从不替换全局异常处理器。
+declare(strict_types=1);
 
-## 上游
+namespace Src\Mimic;
 
-本组件移植自 [wheakerd/mimic](https://github.com/wheakerd/mimic) 的 [443ad3e4a2c8dd9ce7b6028b0b7aea163be4e47d](https://github.com/wheakerd/mimic/tree/443ad3e4a2c8dd9ce7b6028b0b7aea163be4e47d)。该仓库属于 wheakerd，wheakerd 已明确授权将其源码导入并改编到 `super-kernel/mimic`。wheakerd 为本组件指定了 [MIT 许可证](LICENSE)。这份来源和授权声明保留在 [`NOTICE`](NOTICE) 中，分发的归档里也包含它。
+use SuperKernel\Attribute\Provider;
+use SuperKernel\Mimic\Contract\MutatorInterface;
 
-| 身份         | 上游                 | 本组件               |
-|--------------|----------------------|----------------------|
-| Composer 包  | `wheakerd/php-mimic` | `super-kernel/mimic` |
-| PHP 命名空间 | `PhpMimic\`          | `SuperKernel\Mimic\` |
+use function str_replace;
+
+#[Provider(MutatorInterface::class)]
+final readonly class FillEdition implements MutatorInterface
+{
+    public function getCacheKey(): string
+    {
+        return 'fill-edition-1';
+    }
+
+    public function mutate(string $code, ?string $sourcePath = null): string
+    {
+        return str_replace('%EDITION%', 'Community', $code);
+    }
+}
+```
+
+准备并加载该类。将脚本保存为 `bin/edition.php`：
+
+```php
+<?php
+
+declare(strict_types=1);
+
+use Src\Billing\Edition;
+use SuperKernel\Context\ApplicationContext;
+use SuperKernel\Contract\BasePathInterface;
+use SuperKernel\Mimic\MimicFactory;
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+$container = ApplicationContext::getContainer();
+$source = $container->get(BasePathInterface::class) . '/src/Billing/Edition.php';
+
+$address = $container->get(MimicFactory::class)->prepare($source);
+
+require $address;
+
+echo basename($address), PHP_EOL;
+echo Edition::NAME, PHP_EOL;
+```
+
+构建项目并运行脚本：
+
+```bash
+skernel build
+php bin/edition.php
+```
+
+它会打印：
+
+```text
+Src.Billing.Edition.tpl
+Community
+```
+
+## 公开接口
+
+| 名称 | 类别 | 用途 |
+| --- | --- | --- |
+| `SuperKernel\Mimic\Contract\MutatorInterface` | 接口 | 由转换实现：`mutate()` 返回新的源码，`getCacheKey()` 标识该转换。 |
+| `SuperKernel\Mimic\MimicFactory` | 类 | 由容器提供；`prepare()` 返回代理文件路径或 `mimic://` 地址。 |
+| `SuperKernel\Mimic\Contract\MimicDriverInterface` | 接口 | 由两个驱动实现；`prepare()` 接受一个源码快照。 |
+| `SuperKernel\Mimic\Driver\FileDriver` | 类 | 在依赖目录的缓存中写入并重用代理文件。 |
+| `SuperKernel\Mimic\Driver\StreamDriver` | 类 | 把转换后的源码保存在内存中，通过 `mimic://` 地址访问。 |
+| `SuperKernel\Mimic\Source\SourceFile` | 类 | 一个源文件的快照：其路径、内容和内容哈希。 |
+| `SuperKernel\Mimic\Diagnostics\ExceptionPatcher` | 类 | `patch()` 为来自生成代码的异常设置其原始文件和行号。 |
+
+## 需要了解的行为
+
+- 只要源码内容、它相对于包的位置以及缓存键保持不变，代理就会被重用；从不使用修改时间。每当相同的源码必须生成不同的代码时，请修改 `getCacheKey()`。
+- 当缓存无法创建、读取或写入，或者源码位于项目的包之外时，`prepare()` 改为返回 `mimic://` 地址，已有的代理保持不变。
+- 无法读取的源文件会抛出 `InvalidArgumentException`，消息为 `The source file is not readable: <path>`；转换抛出的异常原样向外传播。
+- 如果另一个库占用了 `mimic` 流协议，回退会以 `The mimic stream protocol is already registered by another library.` 失败。
+- 进程已经加载的类无法被替换：修改之后请重启长时间运行的工作进程，并在修改类或包之后重新运行 `skernel build`。
+
+## 文档
+
+开发者文档介绍了驱动、缓存及其指纹、流回退、如何编写转换以及诊断工具，并附有完整示例：[SuperKernel Mimic](https://github.com/super-kernel/.github/blob/main/docs/components/mimic.zh-CN.md)。
+
+## 许可证
+
+基于 MIT 许可证发布，详见 [LICENSE](LICENSE)。上游源码及其授权记录在 [NOTICE](NOTICE) 中。
